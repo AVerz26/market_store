@@ -3,9 +3,9 @@ import requests
 import pandas as pd
 
 # Configuração da página
-st.set_page_config(page_title="Ofertas Machadão", layout="wide", page_icon="🛒")
+st.set_page_config(page_title="Catálogo Machadão", layout="wide", page_icon="🛒")
 
-st.title("🛒 Vitrine de Ofertas e Estoque")
+st.title("🛒 Catálogo Completo de Produtos")
 
 @st.cache_data(ttl=3600)
 def load_data():
@@ -25,31 +25,34 @@ def load_data():
             pricing = item.get('pricing', {})
             stocking = item.get('quantity', {})
             
-            # Filtro base: Apenas produtos em promoção
-            if pricing.get('promotion') and pricing.get('promotionalPrice'):
-                name = item.get('name')
-                price = pricing.get('price')
-                promotional_price = pricing.get('promotionalPrice')
-                image = item.get('image')
-                store = stocking.get('inStock', 0)
-                
-                # Extração e limpeza da categoria
-                categories = item.get('categories', [])
-                cleaned_category = "Sem Categoria"
-                if categories:
-                    cleaned_category = categories[0].replace('store1353:', '').strip()
+            name = item.get('name')
+            price = pricing.get('price', 0)
+            promotional_price = pricing.get('promotionalPrice')
+            is_promo = pricing.get('promotion', False)
+            image = item.get('image')
+            store = stocking.get('inStock', 0)
+            
+            # Extração e limpeza da categoria
+            categories = item.get('categories', [])
+            cleaned_category = "Sem Categoria"
+            if categories:
+                cleaned_category = categories[0].replace('store1353:', '').strip()
 
+            # Cálculo do desconto (apenas se houver preço promocional válido)
+            red_percent = 0
+            if is_promo and promotional_price and price > 0:
                 red_percent = (1 - (promotional_price / price)) * 100
-                
-                data_for_df.append({
-                    'name': name,
-                    'price': price,
-                    'promotionalPrice': promotional_price,
-                    'red_percent': red_percent,
-                    'image': image,
-                    'store': store,
-                    'category': cleaned_category
-                })
+            
+            data_for_df.append({
+                'name': name,
+                'price': price,
+                'promotionalPrice': promotional_price,
+                'is_promo': is_promo,
+                'red_percent': red_percent,
+                'image': image,
+                'store': store,
+                'category': cleaned_category
+            })
         
         return pd.DataFrame(data_for_df)
     except Exception as e:
@@ -59,56 +62,65 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.warning("Nenhuma promoção encontrada ou erro na conexão.")
+    st.warning("Nenhum dado encontrado.")
 else:
     # --- SIDEBAR / FILTROS ---
-    st.sidebar.header("Filtros de Busca")
+    st.sidebar.header("Filtros e Visualização")
     
-    # 1. Filtro de Categoria
+    # 1. Filtro Principal: Ver Tudo ou só Promoções
+    ver_apenas_promo = st.sidebar.toggle("Mostrar apenas promoções", value=False)
+    
+    # 2. Filtro de Categoria
     categorias_disponiveis = sorted(df['category'].unique().tolist())
-    opcoes_categoria = ["Todos"] + categorias_disponiveis
-    categoria_selecionada = st.sidebar.selectbox("Escolha uma Categoria", opcoes_categoria)
-    
-    # 2. Filtro de Desconto
-    min_discount = st.sidebar.slider("Desconto mínimo (%)", 0, 100, 5)
+    categoria_selecionada = st.sidebar.selectbox("Filtrar por Categoria", ["Todos"] + categorias_disponiveis)
     
     # 3. Filtro de Estoque
-    apenas_com_estoque = st.sidebar.checkbox("Apenas com estoque disponível", value=True)
+    apenas_com_estoque = st.sidebar.checkbox("Ocultar itens sem estoque", value=False)
     
+    # 4. Busca por nome
+    busca = st.sidebar.text_input("Buscar produto por nome")
+
     # --- APLICANDO OS FILTROS ---
     df_filtered = df.copy()
+    
+    if ver_apenas_promo:
+        df_filtered = df_filtered[df_filtered['is_promo'] == True]
     
     if categoria_selecionada != "Todos":
         df_filtered = df_filtered[df_filtered['category'] == categoria_selecionada]
         
-    df_filtered = df_filtered[df_filtered['red_percent'] >= min_discount]
-    
     if apenas_com_estoque:
         df_filtered = df_filtered[df_filtered['store'] > 0]
-        
-    df_filtered = df_filtered.sort_values(by='red_percent', ascending=False)
+    
+    if busca:
+        df_filtered = df_filtered[df_filtered['name'].str.contains(busca, case=False)]
+
+    # Ordenação: Promoções primeiro, depois maior desconto
+    df_filtered = df_filtered.sort_values(by=['is_promo', 'red_percent'], ascending=False)
 
     # --- EXIBIÇÃO ---
-    st.write(f"Exibindo **{len(df_filtered)}** produtos em promoção.")
+    st.info(f"Exibindo **{len(df_filtered)}** produtos encontrados.")
 
     cols = st.columns(4)
     for index, (idx, row) in enumerate(df_filtered.iterrows()):
         with cols[index % 4]:
             st.image(row['image'], use_container_width=True)
             
-            # Nome e Categoria (em tamanho menor)
             st.markdown(f"**{row['name']}**")
             st.caption(f"📁 {row['category']}")
             
-            # Preços
-            st.caption(f"De: ~~R$ {row['price']:.2f}~~")
-            st.subheader(f"R$ {row['promotionalPrice']:.2f}")
+            # Lógica de exibição de preço
+            if row['is_promo']:
+                st.caption(f"De: ~~R$ {row['price']:.2f}~~")
+                st.subheader(f"R$ {row['promotionalPrice']:.2f}")
+                st.markdown(f"📉 **-{row['red_percent']:.0f}% OFF**")
+            else:
+                st.subheader(f"R$ {row['price']:.2f}")
+                st.write(" ") # Espaçador para manter o alinhamento
             
-            # Métricas de Desconto e Estoque
-            c1, c2 = st.columns(2)
-            c1.markdown(f"📉 **-{row['red_percent']:.0f}%**")
-            
-            cor_estoque = "red" if row['store'] < 3 else "green"
-            c2.markdown(f"📦 :{cor_estoque}[Qtd: {int(row['store'])}]")
+            # Estoque
+            cor_estoque = "red" if row['store'] <= 0 else "green"
+            texto_estoque = "Esgotado" if row['store'] <= 0 else f"Estoque: {int(row['store'])}"
+            st.markdown(f"📦 :{cor_estoque}[{texto_estoque}]")
             
             st.divider()
