@@ -3,11 +3,11 @@ import requests
 import pandas as pd
 
 # Configuração da página
-st.set_page_config(page_title="Ofertas Machadão", layout="wide")
+st.set_page_config(page_title="Ofertas e Estoque Machadão", layout="wide")
 
-st.title("🛒 Melhores Ofertas Encontradas")
+st.title("🛒 Vitrine de Ofertas com Estoque")
 
-@st.cache_data(ttl=3600)  # Faz o cache dos dados por 1 hora para evitar excesso de requisições
+@st.cache_data(ttl=3600)
 def load_data():
     url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
     headers = {
@@ -23,15 +23,16 @@ def load_data():
         data_for_df = []
         for item in dta.get('hits', []):
             pricing = item.get('pricing', {})
+            stocking = item.get('quantity', {}) # Pegando os dados de quantidade
             
-            # Filtro: Apenas produtos em promoção e com preço válido
+            # Filtro: Apenas produtos em promoção
             if pricing.get('promotion') and pricing.get('promotionalPrice'):
                 name = item.get('name')
                 price = pricing.get('price')
                 promotional_price = pricing.get('promotionalPrice')
                 image = item.get('image')
+                store = stocking.get('inStock', 0) # Variável de estoque
                 
-                # Cálculo do desconto
                 red_percent = (1 - (promotional_price / price)) * 100
                 
                 data_for_df.append({
@@ -39,7 +40,8 @@ def load_data():
                     'price': price,
                     'promotionalPrice': promotional_price,
                     'red_percent': red_percent,
-                    'image': image
+                    'image': image,
+                    'store': store
                 })
         
         return pd.DataFrame(data_for_df)
@@ -52,20 +54,40 @@ df = load_data()
 if df.empty:
     st.warning("Nenhuma promoção encontrada no momento.")
 else:
-    # Sidebar para filtros
-    st.sidebar.header("Filtros")
+    # Sidebar
+    st.sidebar.header("Configurações de Visualização")
     min_discount = st.sidebar.slider("Desconto mínimo (%)", 0, 100, 5)
     
-    # Filtrando o DF com base no slider
-    df_filtered = df[df['red_percent'] >= min_discount].sort_values(by='red_percent', ascending=False)
+    # Filtro de estoque na sidebar
+    apenas_com_estoque = st.sidebar.checkbox("Apenas itens com estoque disponível", value=True)
+    
+    # Aplicando filtros
+    df_filtered = df[df['red_percent'] >= min_discount]
+    if apenas_com_estoque:
+        df_filtered = df_filtered[df_filtered['store'] > 0]
+        
+    df_filtered = df_filtered.sort_values(by='red_percent', ascending=False)
 
-    # Exibição em Grid (4 colunas)
+    # Exibição em Grid
     cols = st.columns(4)
-    for index, row in df_filtered.iterrows():
+    for index, (idx, row) in enumerate(df_filtered.iterrows()):
         with cols[index % 4]:
+            # Badge de Desconto no topo
             st.image(row['image'], use_container_width=True)
+            
+            # Informações do Produto
             st.markdown(f"**{row['name']}**")
-            st.markdown(f"~~R$ {row['price']:.2f}~~")
-            st.markdown(f"### R$ {row['promotionalPrice']:.2f}")
-            st.success(f"🔥 {row['red_percent']:.0f}% de desconto")
+            
+            # Preços
+            st.caption(f"De: ~~R$ {row['price']:.2f}~~")
+            st.subheader(f"R$ {row['promotionalPrice']:.2f}")
+            
+            # Indicadores de Desconto e Estoque
+            c1, c2 = st.columns(2)
+            c1.markdown(f"📉 **-{row['red_percent']:.0f}%**")
+            
+            # Cor do estoque: Vermelho se estiver baixo (ex: < 5)
+            cor_estoque = "red" if row['store'] < 5 else "green"
+            c2.markdown(f"📦 :{cor_estoque}[Estoque: {int(row['store'])}]")
+            
             st.divider()
