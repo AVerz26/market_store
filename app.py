@@ -101,11 +101,25 @@ else:
     # --- EXIBIÇÃO ---
     st.info(f"Exibindo **{len(df_filtered)}** produtos encontrados.")
 
+    # URL placeholder caso o produto venha sem imagem ou com link quebrado
+    IMAGEM_PADRAO = "https://via.placeholder.com/300x300.png?text=Sem+Foto"
+
     cols = st.columns(4)
     for index, (idx, row) in enumerate(df_filtered.iterrows()):
         with cols[index % 4]:
-            st.image(row['image'], use_container_width=True)
             
+            # --- TRATAMENTO E VALIDAÇÃO DA IMAGEM ---
+            url_imagem = row['image']
+            if not url_imagem or not isinstance(url_imagem, str) or url_imagem.strip() == "":
+                url_imagem = IMAGEM_PADRAO
+            
+            try:
+                st.image(url_imagem, use_container_width=True)
+            except Exception:
+                # Se a URL parecer correta mas falhar no download ou decodificação do Streamlit
+                st.image(IMAGEM_PADRAO, use_container_width=True)
+            
+            # --- INFORMAÇÕES DO PRODUTO ---
             st.markdown(f"**{row['name']}**")
             st.caption(f"📁 {row['category']}")
             
