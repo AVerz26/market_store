@@ -64,10 +64,10 @@ df = load_data()
 if df.empty:
     st.warning("Nenhum dado encontrado.")
 else:
-    # --- SIDEBAR / FILTROS ---
+
     st.sidebar.header("Filtros e Visualização")
     
-    # 1. Filtro Principal: Ver Tudo ou só Promoções
+    # 1. Filtro Principal
     ver_apenas_promo = st.sidebar.toggle("Mostrar apenas promoções", value=False)
     
     # 2. Filtro de Categoria
@@ -80,7 +80,6 @@ else:
     # 4. Busca por nome
     busca = st.sidebar.text_input("Buscar produto por nome")
 
-    # --- APLICANDO OS FILTROS ---
     df_filtered = df.copy()
     
     if ver_apenas_promo:
@@ -101,7 +100,6 @@ else:
     # --- EXIBIÇÃO ---
     st.info(f"Exibindo **{len(df_filtered)}** produtos encontrados.")
 
-    # URL placeholder caso o produto venha sem imagem ou com link quebrado
     IMAGEM_PADRAO = "https://via.placeholder.com/300x300.png?text=Sem+Foto"
 
     cols = st.columns(4)
