@@ -1,6 +1,9 @@
 import streamlit as st
 import requests
 import pandas as pd
+from PIL import Image
+from io import BytesIO
+import hashlib
 
 # Configuração da página
 st.set_page_config(page_title="Catálogo Machadão", layout="wide", page_icon="🛒")
@@ -13,11 +16,12 @@ def load_data():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0',
         'Origin': 'https://machadao.com.br',
-        'Referer': 'https://machadao.com.br/'
+        'Referer': 'https://machadao.com.br/',
+        'timeout': 10  # Reduzido de 15s para 10s
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=10)
         dta = response.json()
         
         data_for_df = []
@@ -58,6 +62,24 @@ def load_data():
     except Exception as e:
         st.error(f"Erro ao carregar dados: {e}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def compress_image_url(url):
+    """Compacta imagem para 150x150px em JPEG de baixa qualidade"""
+    try:
+        response = requests.get(url, timeout=3)
+        img = Image.open(BytesIO(response.content))
+        
+        # Redimensionar para 150x150px
+        img = img.resize((150, 150), Image.Resampling.LANCZOS)
+        
+        # Salvar em memória como JPEG compactado
+        buffer = BytesIO()
+        img.save(buffer, format='JPEG', quality=60, optimize=True)
+        buffer.seek(0)
+        return buffer
+    except Exception:
+        return None
 
 df = load_data()
 
@@ -100,7 +122,7 @@ else:
     # --- EXIBIÇÃO ---
     st.info(f"Exibindo **{len(df_filtered)}** produtos encontrados.")
 
-    IMAGEM_PADRAO = "https://via.placeholder.com/300x300.png?text=Sem+Foto"
+    IMAGEM_PADRAO = "https://via.placeholder.com/150x150.png?text=Sem+Foto"
 
     cols = st.columns(4)
     for index, (idx, row) in enumerate(df_filtered.iterrows()):
@@ -109,13 +131,17 @@ else:
             # --- TRATAMENTO E VALIDAÇÃO DA IMAGEM ---
             url_imagem = row['image']
             if not url_imagem or not isinstance(url_imagem, str) or url_imagem.strip() == "":
-                url_imagem = IMAGEM_PADRAO
-            
-            try:
-                st.image(url_imagem, use_container_width=True)
-            except Exception:
-                # Se a URL parecer correta mas falhar no download ou decodificação do Streamlit
                 st.image(IMAGEM_PADRAO, use_container_width=True)
+            else:
+                try:
+                    # Tentar carregar e compactar a imagem
+                    imagem_compactada = compress_image_url(url_imagem)
+                    if imagem_compactada:
+                        st.image(imagem_compactada, use_container_width=True)
+                    else:
+                        st.image(IMAGEM_PADRAO, use_container_width=True)
+                except Exception:
+                    st.image(IMAGEM_PADRAO, use_container_width=True)
             
             # --- INFORMAÇÕES DO PRODUTO ---
             st.markdown(f"**{row['name']}**")
