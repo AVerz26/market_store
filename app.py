@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 from PIL import Image
 from io import BytesIO
-import hashlib
 
 # Configuração da página
 st.set_page_config(page_title="Catálogo Machadão", layout="wide", page_icon="🛒")
@@ -16,8 +15,7 @@ def load_data():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0',
         'Origin': 'https://machadao.com.br',
-        'Referer': 'https://machadao.com.br/',
-        'timeout': 10  # Reduzido de 15s para 10s
+        'Referer': 'https://machadao.com.br/'
     }
     
     try:
