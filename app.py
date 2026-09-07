@@ -20,6 +20,11 @@ def load_data():
     
     try:
         response = requests.get(url, headers=headers, timeout=10)
+
+        if response.status_code != 200:
+            st.error(f"A API recusou a conexão. Código HTTP: {response.status_code}")
+            st.expander("Ver resposta bruta do servidor (Debug)").write(response.text[:1000])
+            return pd.DataFrame()
         dta = response.json()
         
         data_for_df = []
