@@ -15,9 +15,14 @@ def load_data():
     url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
     
     headers = {
-        'Origin': 'https://machadao.com.br',
-        'Referer': 'https://machadao.com.br/'
-    }
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Origin': 'https://machadao.com.br',
+    'Referer': 'https://machadao.com.br/',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site'
+}
     
     try:
         # O parâmetro impersonate="chrome" resolve o bloqueio 403
