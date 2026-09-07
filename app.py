@@ -1,8 +1,9 @@
 import streamlit as st
-import requests
 import pandas as pd
 from PIL import Image
 from io import BytesIO
+# Importando a biblioteca que simula um navegador real para burlar o Cloudflare
+from curl_cffi import requests as tls_requests
 
 # Configuração da página
 st.set_page_config(page_title="Catálogo Machadão", layout="wide", page_icon="🛒")
@@ -12,19 +13,20 @@ st.title("🛒 Catálogo Completo de Produtos")
 @st.cache_data(ttl=3600)
 def load_data():
     url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0',
         'Origin': 'https://machadao.com.br',
         'Referer': 'https://machadao.com.br/'
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-
+        # O parâmetro impersonate="chrome" resolve o bloqueio 403
+        response = tls_requests.get(url, headers=headers, impersonate="chrome", timeout=15)
+        
         if response.status_code != 200:
             st.error(f"A API recusou a conexão. Código HTTP: {response.status_code}")
-            st.expander("Ver resposta bruta do servidor (Debug)").write(response.text[:1000])
             return pd.DataFrame()
+            
         dta = response.json()
         
         data_for_df = []
@@ -45,7 +47,7 @@ def load_data():
             if categories:
                 cleaned_category = categories[0].replace('store1353:', '').strip()
 
-            # Cálculo do desconto (apenas se houver preço promocional válido)
+            # Cálculo do desconto
             red_percent = 0
             if is_promo and promotional_price and price > 0:
                 red_percent = (1 - (promotional_price / price)) * 100
@@ -70,11 +72,19 @@ def load_data():
 def compress_image_url(url):
     """Compacta imagem para 150x150px em JPEG de baixa qualidade"""
     try:
-        response = requests.get(url, timeout=3)
+        # Usando tls_requests aqui também caso as imagens usem a mesma proteção
+        response = tls_requests.get(url, impersonate="chrome", timeout=5)
         img = Image.open(BytesIO(response.content))
         
+        # Tratamento para converter PNGs com fundo transparente antes de salvar em JPEG
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+            
         # Redimensionar para 150x150px
-        img = img.resize((150, 150), Image.Resampling.LANCZOS)
+        if hasattr(Image, 'Resampling'):
+            img = img.resize((150, 150), Image.Resampling.LANCZOS)
+        else:
+            img = img.resize((150, 150), Image.ANTIALIAS)
         
         # Salvar em memória como JPEG compactado
         buffer = BytesIO()
@@ -89,7 +99,6 @@ df = load_data()
 if df.empty:
     st.warning("Nenhum dado encontrado.")
 else:
-
     st.sidebar.header("Filtros e Visualização")
     
     # 1. Filtro Principal
@@ -137,7 +146,6 @@ else:
                 st.image(IMAGEM_PADRAO, use_container_width=True)
             else:
                 try:
-                    # Tentar carregar e compactar a imagem
                     imagem_compactada = compress_image_url(url_imagem)
                     if imagem_compactada:
                         st.image(imagem_compactada, use_container_width=True)
