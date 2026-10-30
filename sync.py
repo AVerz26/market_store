@@ -24,18 +24,15 @@ HEADERS = {
     'Sec-Fetch-Site': 'cross-site'
 }
 
-def sync():
-    print("Iniciando sincronização dos produtos do Machadão...")
+def sync(max_items=1000):
+    print(f"Iniciando sincronização dos produtos reais do Machadão via API v2 (até {max_items} itens)...")
     
-    # 1. Obter sessão com cookies visitando a homepage
-    print("Obtendo sessão e cookies em machadao.com.br...")
     if HAS_CURL_CFFI:
         try:
             s = curl_requests.Session(impersonate="chrome124")
             s.headers.update(HEADERS)
             s.get("https://machadao.com.br", timeout=15)
-        except Exception as e:
-            print(f"Aviso curl_cffi: {e}, usando requests padrão.")
+        except Exception:
             s = requests.Session()
             s.headers.update(HEADERS)
             s.get("https://machadao.com.br", timeout=15)
@@ -44,60 +41,61 @@ def sync():
         s.headers.update(HEADERS)
         s.get("https://machadao.com.br", timeout=15)
         
-    # 2. Consultar catálogo completo
-    url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
-    print("Consultando API do catálogo...")
-    response = s.get(url, timeout=30)
+    all_data = []
+    page_size = 20
     
-    if response.status_code != 200:
-        print(f"Erro na API: HTTP {response.status_code}")
-        print(response.text[:300])
-        sys.exit(1)
+    for offset in range(0, max_items, page_size):
+        url = f"https://sense.osuper.com.br/273/1353/v2/search?brands=&categories=&tags=&from={offset}&size={page_size}&sortField=_score&sortOrder=desc"
+        response = s.get(url, timeout=20)
         
-    dta = response.json()
-    hits = dta.get('hits', [])
-    print(f"Recebidos {len(hits)} produtos brutos da API. Processando...")
-    
-    data_for_df = []
-    for item in hits:
-        pricing = item.get('pricing', {})
-        stocking = item.get('quantity', {})
-        
-        name = item.get('name')
-        price = pricing.get('price', 0)
-        promotional_price = pricing.get('promotionalPrice')
-        is_promo = pricing.get('promotion', False)
-        image = item.get('image')
-        store = stocking.get('inStock', 0)
-        
-        categories = item.get('categories', [])
-        cleaned_category = "Sem Categoria"
-        if categories:
-            cleaned_category = categories[0].replace('store1353:', '').strip()
+        if response.status_code != 200:
+            print(f"Aviso: resposta HTTP {response.status_code} na página {offset}.")
+            break
+            
+        dta = response.json()
+        hits = dta.get('hits', [])
+        if not hits:
+            break
+            
+        for item in hits:
+            pricing = item.get('pricing', {})
+            stocking = item.get('quantity', {})
+            
+            name = item.get('name')
+            price = pricing.get('price', 0)
+            promotional_price = pricing.get('promotionalPrice')
+            is_promo = pricing.get('promotion', False)
+            image = item.get('image')
+            store = stocking.get('inStock', 0)
+            
+            categories = item.get('categories', [])
+            cleaned_category = "Sem Categoria"
+            if categories:
+                cleaned_category = categories[0].replace('store1353:', '').strip()
 
-        red_percent = 0
-        if is_promo and promotional_price and price > 0:
-            red_percent = (1 - (promotional_price / price)) * 100
-        
-        data_for_df.append({
-            'name': name,
-            'price': price,
-            'promotionalPrice': promotional_price,
-            'is_promo': is_promo,
-            'red_percent': red_percent,
-            'image': image,
-            'store': store,
-            'category': cleaned_category
-        })
-        
-    df = pd.DataFrame(data_for_df)
-    
+            red_percent = 0
+            if is_promo and promotional_price and price > 0:
+                red_percent = (1 - (promotional_price / price)) * 100
+            
+            all_data.append({
+                'name': name,
+                'price': price,
+                'promotionalPrice': promotional_price,
+                'is_promo': is_promo,
+                'red_percent': red_percent,
+                'image': image,
+                'store': store,
+                'category': cleaned_category
+            })
+            
+        print(f"Coletados {len(all_data)} produtos...")
+        if not dta.get('hasNext', False):
+            break
+            
+    df = pd.DataFrame(all_data)
     output_path = os.path.join(os.path.dirname(__file__), "produtos.parquet")
     df.to_parquet(output_path, compression="snappy")
-    
-    print(f"Sucesso! {len(df)} produtos salvos em '{output_path}'.")
-    print(f"Horário da sincronização: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"Concluído! {len(df)} produtos reais salvos em '{output_path}'.")
 
 if __name__ == "__main__":
     sync()
-

@@ -64,18 +64,9 @@ def fetch_url(url, timeout=30):
                 pass
         return requests.get(url, headers=HEADERS, timeout=timeout)
 
-def fetch_from_api():
-    """Busca produtos diretamente na API oficial"""
-    url = "https://sense.osuper.com.br/273/1353/v2/search?brands=&categories=&tags=&from=0&sortField=_score&sortOrder=desc"
-    response = fetch_url(url, timeout=30)
-    
-    if response.status_code != 200:
-        raise RuntimeError(f"A API recusou a conexão (HTTP {response.status_code}). O firewall Cloudflare bloqueou o IP do servidor em nuvem.")
-        
-    dta = response.json()
-    hits = dta.get('hits', [])
-    data_for_df = []
-    
+def parse_items(hits):
+    """Normaliza lista de itens da API para lista de dicionários"""
+    data = []
     for item in hits:
         pricing = item.get('pricing', {})
         stocking = item.get('quantity', {})
@@ -108,9 +99,9 @@ def fetch_from_api():
         })
     return data
 
-def fetch_from_api_v2(max_items=200):
-    """Busca produtos na nova API v2 (https://sense.osuper.com.br/273/1353/v2/search)"""
-    page_size = 20  # Limite máximo aceito pelo endpoint v2
+def fetch_from_api_v2(max_items=300):
+    """Busca produtos na nova API v2 oficial (https://sense.osuper.com.br/273/1353/v2/search)"""
+    page_size = 20  # Limite máximo de itens por chamada no v2
     all_data = []
     
     for offset in range(0, max_items, page_size):
@@ -134,20 +125,20 @@ def fetch_from_api_v2(max_items=200):
             
     return pd.DataFrame(all_data)
 
-@st.cache_data(ttl=3600, show_spinner="Carregando produtos...")
+@st.cache_data(ttl=3600, show_spinner="Carregando produtos da API v2...")
 def load_data():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     parquet_path = os.path.join(base_dir, "produtos.parquet")
     
-    # 1. Se existir o arquivo produtos.parquet sincronizado, carrega instantaneamente
+    # Se existir o arquivo produtos.parquet sincronizado, carrega
     if os.path.exists(parquet_path):
         try:
-            return pd.read_parquet(parquet_path), "produtos.parquet (offline/cache)"
+            return pd.read_parquet(parquet_path), "produtos.parquet"
         except Exception:
             pass
 
-    # 2. Se não houver arquivo salvo, busca diretamente na API v2
-    df = fetch_from_api_v2()
+    # Caso contrário, busca direto da API v2 ao vivo
+    df = fetch_from_api_v2(max_items=300)
     return df, "API v2 ao vivo"
 
 @st.cache_data(ttl=3600)
@@ -191,7 +182,7 @@ if df.empty:
 else:
     st.sidebar.header("Filtros e Visualização")
     
-    st.sidebar.caption(f"📁 Origem dos dados: **{origem}**")
+    st.sidebar.caption(f"📁 Origem: **{origem}**")
     if st.sidebar.button("🔄 Recarregar Dados"):
         st.cache_data.clear()
         st.rerun()
