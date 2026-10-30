@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 from PIL import Image
@@ -36,7 +37,6 @@ def get_session():
         try:
             s = curl_requests.Session(impersonate="chrome124")
             s.headers.update(HEADERS)
-            # Visita a home para obter cookies de sessão (SESSION_ID e st_273)
             s.get("https://machadao.com.br", timeout=15)
             return s, True
         except Exception:
@@ -56,8 +56,7 @@ def fetch_url(url, timeout=30):
     """Executa requisição com sessão e cookies estabelecidos"""
     try:
         return GLOBAL_SESSION.get(url, timeout=timeout)
-    except Exception as e:
-        # Fallback para nova requisição direta
+    except Exception:
         if HAS_CURL_CFFI:
             try:
                 return curl_requests.get(url, headers=HEADERS, impersonate="chrome124", timeout=timeout)
@@ -65,21 +64,19 @@ def fetch_url(url, timeout=30):
                 pass
         return requests.get(url, headers=HEADERS, timeout=timeout)
 
-@st.cache_data(ttl=3600, show_spinner="Carregando produtos da API...")
-def load_data():
+def fetch_from_api():
+    """Busca produtos diretamente na API oficial"""
     url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
-
     response = fetch_url(url, timeout=30)
-
+    
     if response.status_code != 200:
-        error_msg = f"A API recusou a conexão. Código HTTP: {response.status_code}"
-        # Lançamos exceção para que o Streamlit NÃO armazene falhas em cache por 1 hora
-        raise RuntimeError(f"{error_msg} | Detalhes: {response.text[:500]}")
+        raise RuntimeError(f"A API recusou a conexão (HTTP {response.status_code}). O firewall Cloudflare bloqueou o IP do servidor em nuvem.")
         
     dta = response.json()
-    
+    hits = dta.get('hits', [])
     data_for_df = []
-    for item in dta.get('hits', []):
+    
+    for item in hits:
         pricing = item.get('pricing', {})
         stocking = item.get('quantity', {})
         
@@ -90,13 +87,11 @@ def load_data():
         image = item.get('image')
         store = stocking.get('inStock', 0)
         
-        # Extração e limpeza da categoria
         categories = item.get('categories', [])
         cleaned_category = "Sem Categoria"
         if categories:
             cleaned_category = categories[0].replace('store1353:', '').strip()
 
-        # Cálculo do desconto
         red_percent = 0
         if is_promo and promotional_price and price > 0:
             red_percent = (1 - (promotional_price / price)) * 100
@@ -111,8 +106,24 @@ def load_data():
             'store': store,
             'category': cleaned_category
         })
-    
+        
     return pd.DataFrame(data_for_df)
+
+@st.cache_data(ttl=3600, show_spinner="Carregando produtos...")
+def load_data():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    parquet_path = os.path.join(base_dir, "produtos.parquet")
+    
+    # 1. Se existir o arquivo produtos.parquet, carrega instantaneamente
+    if os.path.exists(parquet_path):
+        try:
+            return pd.read_parquet(parquet_path), "produtos.parquet"
+        except Exception:
+            pass
+
+    # 2. Se não houver arquivo salvo, tenta a API
+    df = fetch_from_api()
+    return df, "API ao vivo"
 
 @st.cache_data(ttl=3600)
 def compress_image_url(url):
@@ -138,29 +149,31 @@ def compress_image_url(url):
     except Exception:
         return None
 
-# Carregamento dos dados com tratamento de erro
+# Carregamento dos dados
 try:
-    df = load_data()
+    df, origem = load_data()
 except Exception as e:
     st.error(f"Erro ao carregar dados: {e}")
-    st.info("💡 Clique no botão abaixo para limpar o cache e tentar novamente.")
-    if st.button("🔄 Limpar Cache e Tentar Novamente"):
+    st.info("💡 Clique no botão abaixo para tentar novamente.")
+    if st.button("🔄 Tentar Novamente"):
         st.cache_data.clear()
         st.rerun()
     df = pd.DataFrame()
+    origem = "Nenhuma"
 
 if df.empty:
-    st.warning("Nenhum dado encontrado. A proteção do site pode estar bloqueando o acesso.")
+    st.warning("Nenhum dado encontrado.")
 else:
     st.sidebar.header("Filtros e Visualização")
     
-    if st.sidebar.button("🔄 Atualizar Dados"):
+    st.sidebar.caption(f"📁 Origem dos dados: **{origem}**")
+    if st.sidebar.button("🔄 Recarregar Dados"):
         st.cache_data.clear()
         st.rerun()
 
     ver_apenas_promo = st.sidebar.toggle("Mostrar apenas promoções", value=False)
     
-    categorias_disponiveis = sorted(df['category'].unique().tolist())
+    categorias_disponiveis = sorted(df['category'].dropna().unique().tolist())
     categoria_selecionada = st.sidebar.selectbox("Filtrar por Categoria", ["Todos"] + categorias_disponiveis)
     
     apenas_com_estoque = st.sidebar.checkbox("Ocultar itens sem estoque", value=False)
@@ -184,9 +197,9 @@ else:
     df_filtered = df_filtered.sort_values(by=['is_promo', 'red_percent'], ascending=False)
 
     total_itens = len(df_filtered)
-    st.info(f"Encontrados **{total_itens}** produtos.")
+    st.info(f"Exibindo **{total_itens}** produtos.")
 
-    # Paginação para evitar sobrecarga no navegador e no carregamento de imagens
+    # Paginação
     itens_opcoes = [24, 48, 96, "Todos"]
     itens_por_pagina = st.sidebar.selectbox("Itens por página", itens_opcoes, index=1)
 

@@ -1,5 +1,6 @@
 streamlit
 pandas
+pyarrow
 requests
 curl_cffi
 Pillow
