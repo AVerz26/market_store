@@ -64,9 +64,18 @@ def fetch_url(url, timeout=30):
                 pass
         return requests.get(url, headers=HEADERS, timeout=timeout)
 
-def parse_items(hits):
-    """Normaliza lista de itens da API para lista de dicionários"""
-    data = []
+def fetch_from_api():
+    """Busca produtos diretamente na API oficial"""
+    url = "https://sense.osuper.com.br/273/1353/v2/search?brands=&categories=&tags=&from=0&sortField=_score&sortOrder=desc"
+    response = fetch_url(url, timeout=30)
+    
+    if response.status_code != 200:
+        raise RuntimeError(f"A API recusou a conexão (HTTP {response.status_code}). O firewall Cloudflare bloqueou o IP do servidor em nuvem.")
+        
+    dta = response.json()
+    hits = dta.get('hits', [])
+    data_for_df = []
+    
     for item in hits:
         pricing = item.get('pricing', {})
         stocking = item.get('quantity', {})
