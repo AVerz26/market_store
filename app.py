@@ -4,7 +4,7 @@ from PIL import Image
 from io import BytesIO
 import requests
 
-# curl_cffi simula a pilha TLS/JA3/JA4 e HTTP/2 de navegadores modernos, contornando bloqueios do Cloudflare
+# curl_cffi simula a pilha TLS/JA3/JA4 e HTTP/2 de navegadores modernos contra Cloudflare
 try:
     from curl_cffi import requests as curl_requests
     HAS_CURL_CFFI = True
@@ -16,7 +16,6 @@ st.set_page_config(page_title="Catálogo Machadão", layout="wide", page_icon="�
 
 st.title("🛒 Catálogo Completo de Produtos")
 
-# Headers completos simulando requisição genuína do Chrome
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
@@ -31,70 +30,89 @@ HEADERS = {
     'Sec-Fetch-Site': 'cross-site'
 }
 
-def fetch_url(url, timeout=30):
-    """Executa requisição com curl_cffi (impersonate chrome) ou requests padrão com headers de navegador"""
+def get_session():
+    """Inicializa sessão com cookies válidos visitando a página inicial do Machadão"""
     if HAS_CURL_CFFI:
         try:
-            return curl_requests.get(url, headers=HEADERS, impersonate="chrome124", timeout=timeout)
+            s = curl_requests.Session(impersonate="chrome124")
+            s.headers.update(HEADERS)
+            # Visita a home para obter cookies de sessão (SESSION_ID e st_273)
+            s.get("https://machadao.com.br", timeout=15)
+            return s, True
         except Exception:
             pass
-    return requests.get(url, headers=HEADERS, timeout=timeout)
 
-@st.cache_data(ttl=3600)
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    try:
+        s.get("https://machadao.com.br", timeout=15)
+    except Exception:
+        pass
+    return s, False
+
+GLOBAL_SESSION, IS_CURL = get_session()
+
+def fetch_url(url, timeout=30):
+    """Executa requisição com sessão e cookies estabelecidos"""
+    try:
+        return GLOBAL_SESSION.get(url, timeout=timeout)
+    except Exception as e:
+        # Fallback para nova requisição direta
+        if HAS_CURL_CFFI:
+            try:
+                return curl_requests.get(url, headers=HEADERS, impersonate="chrome124", timeout=timeout)
+            except Exception:
+                pass
+        return requests.get(url, headers=HEADERS, timeout=timeout)
+
+@st.cache_data(ttl=3600, show_spinner="Carregando produtos da API...")
 def load_data():
     url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
 
-    try:
-        response = fetch_url(url, timeout=30)
+    response = fetch_url(url, timeout=30)
 
-        if response.status_code != 200:
-            st.error(f"A API recusou a conexão. Código HTTP: {response.status_code}")
-            try:
-                st.expander("Ver resposta bruta do servidor (Debug)").write(response.content.decode('utf-8')[:1000])
-            except Exception:
-                st.expander("Ver resposta bruta do servidor (Debug)").write("Resposta binária/compactada recebida.")
-            return pd.DataFrame()
-            
-        dta = response.json()
+    if response.status_code != 200:
+        error_msg = f"A API recusou a conexão. Código HTTP: {response.status_code}"
+        # Lançamos exceção para que o Streamlit NÃO armazene falhas em cache por 1 hora
+        raise RuntimeError(f"{error_msg} | Detalhes: {response.text[:500]}")
         
-        data_for_df = []
-        for item in dta.get('hits', []):
-            pricing = item.get('pricing', {})
-            stocking = item.get('quantity', {})
-            
-            name = item.get('name')
-            price = pricing.get('price', 0)
-            promotional_price = pricing.get('promotionalPrice')
-            is_promo = pricing.get('promotion', False)
-            image = item.get('image')
-            store = stocking.get('inStock', 0)
-            
-            # Extração e limpeza da categoria
-            categories = item.get('categories', [])
-            cleaned_category = "Sem Categoria"
-            if categories:
-                cleaned_category = categories[0].replace('store1353:', '').strip()
+    dta = response.json()
+    
+    data_for_df = []
+    for item in dta.get('hits', []):
+        pricing = item.get('pricing', {})
+        stocking = item.get('quantity', {})
+        
+        name = item.get('name')
+        price = pricing.get('price', 0)
+        promotional_price = pricing.get('promotionalPrice')
+        is_promo = pricing.get('promotion', False)
+        image = item.get('image')
+        store = stocking.get('inStock', 0)
+        
+        # Extração e limpeza da categoria
+        categories = item.get('categories', [])
+        cleaned_category = "Sem Categoria"
+        if categories:
+            cleaned_category = categories[0].replace('store1353:', '').strip()
 
-            # Cálculo do desconto
-            red_percent = 0
-            if is_promo and promotional_price and price > 0:
-                red_percent = (1 - (promotional_price / price)) * 100
-            
-            data_for_df.append({
-                'name': name,
-                'price': price,
-                'promotionalPrice': promotional_price,
-                'is_promo': is_promo,
-                'red_percent': red_percent,
-                'image': image,
-                'store': store,
-                'category': cleaned_category
-            })
+        # Cálculo do desconto
+        red_percent = 0
+        if is_promo and promotional_price and price > 0:
+            red_percent = (1 - (promotional_price / price)) * 100
         
-        return pd.DataFrame(data_for_df)
-    except Exception as e:
-        st.error(f"Erro ao carregar dados: {e}")
-        return pd.DataFrame()
+        data_for_df.append({
+            'name': name,
+            'price': price,
+            'promotionalPrice': promotional_price,
+            'is_promo': is_promo,
+            'red_percent': red_percent,
+            'image': image,
+            'store': store,
+            'category': cleaned_category
+        })
+    
+    return pd.DataFrame(data_for_df)
 
 @st.cache_data(ttl=3600)
 def compress_image_url(url):
@@ -120,13 +138,26 @@ def compress_image_url(url):
     except Exception:
         return None
 
-df = load_data()
+# Carregamento dos dados com tratamento de erro
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Erro ao carregar dados: {e}")
+    st.info("💡 Clique no botão abaixo para limpar o cache e tentar novamente.")
+    if st.button("🔄 Limpar Cache e Tentar Novamente"):
+        st.cache_data.clear()
+        st.rerun()
+    df = pd.DataFrame()
 
 if df.empty:
     st.warning("Nenhum dado encontrado. A proteção do site pode estar bloqueando o acesso.")
 else:
     st.sidebar.header("Filtros e Visualização")
     
+    if st.sidebar.button("🔄 Atualizar Dados"):
+        st.cache_data.clear()
+        st.rerun()
+
     ver_apenas_promo = st.sidebar.toggle("Mostrar apenas promoções", value=False)
     
     categorias_disponiveis = sorted(df['category'].unique().tolist())
