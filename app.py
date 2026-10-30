@@ -66,7 +66,7 @@ def fetch_url(url, timeout=30):
 
 def fetch_from_api():
     """Busca produtos diretamente na API oficial"""
-    url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
+    url = "https://sense.osuper.com.br/273/1353/v2/search?brands=&categories=&tags=&from=0&sortField=_score&sortOrder=desc"
     response = fetch_url(url, timeout=30)
     
     if response.status_code != 200:
