@@ -2,41 +2,56 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 from io import BytesIO
-# Importando a biblioteca especializada em burlar Cloudflare
-import cloudscraper
+import requests
+
+# curl_cffi simula a pilha TLS/JA3/JA4 e HTTP/2 de navegadores modernos, contornando bloqueios do Cloudflare
+try:
+    from curl_cffi import requests as curl_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
 
 # Configuração da página
 st.set_page_config(page_title="Catálogo Machadão", layout="wide", page_icon="🛒")
 
 st.title("🛒 Catálogo Completo de Produtos")
 
-# Criamos uma instância global do scraper configurada para simular o Chrome no Windows
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
-)
+# Headers completos simulando requisição genuína do Chrome
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Origin': 'https://machadao.com.br',
+    'Referer': 'https://machadao.com.br/',
+    'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site'
+}
+
+def fetch_url(url, timeout=30):
+    """Executa requisição com curl_cffi (impersonate chrome) ou requests padrão com headers de navegador"""
+    if HAS_CURL_CFFI:
+        try:
+            return curl_requests.get(url, headers=HEADERS, impersonate="chrome124", timeout=timeout)
+        except Exception:
+            pass
+    return requests.get(url, headers=HEADERS, timeout=timeout)
 
 @st.cache_data(ttl=3600)
 def load_data():
     url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
 
-    headers = {
-        'Origin': 'https://machadao.com.br',
-        'Referer': 'https://machadao.com.br/'
-    }
-    
     try:
-        # O cloudscraper faz a requisição e tenta resolver o desafio JS em segundo plano
-        response = scraper.get(url, headers=headers, timeout=20)
+        response = fetch_url(url, timeout=30)
 
         if response.status_code != 200:
             st.error(f"A API recusou a conexão. Código HTTP: {response.status_code}")
             try:
                 st.expander("Ver resposta bruta do servidor (Debug)").write(response.content.decode('utf-8')[:1000])
-            except:
+            except Exception:
                 st.expander("Ver resposta bruta do servidor (Debug)").write("Resposta binária/compactada recebida.")
             return pd.DataFrame()
             
@@ -85,8 +100,9 @@ def load_data():
 def compress_image_url(url):
     """Compacta imagem para 150x150px em JPEG de baixa qualidade"""
     try:
-        # Usamos o mesmo scraper para baixar as imagens
-        response = scraper.get(url, timeout=5)
+        response = fetch_url(url, timeout=5)
+        if response.status_code != 200:
+            return None
         img = Image.open(BytesIO(response.content))
         
         if img.mode in ("RGBA", "P"):
@@ -132,16 +148,32 @@ else:
         df_filtered = df_filtered[df_filtered['store'] > 0]
     
     if busca:
-        df_filtered = df_filtered[df_filtered['name'].str.contains(busca, case=False)]
+        df_filtered = df_filtered[df_filtered['name'].str.contains(busca, case=False, na=False)]
 
     df_filtered = df_filtered.sort_values(by=['is_promo', 'red_percent'], ascending=False)
 
-    st.info(f"Exibindo **{len(df_filtered)}** produtos encontrados.")
+    total_itens = len(df_filtered)
+    st.info(f"Encontrados **{total_itens}** produtos.")
+
+    # Paginação para evitar sobrecarga no navegador e no carregamento de imagens
+    itens_opcoes = [24, 48, 96, "Todos"]
+    itens_por_pagina = st.sidebar.selectbox("Itens por página", itens_opcoes, index=1)
+
+    if itens_por_pagina == "Todos":
+        itens_exibidos = df_filtered
+        st.caption(f"Exibindo todos os {total_itens} produtos")
+    else:
+        total_paginas = max(1, (total_itens + itens_por_pagina - 1) // itens_por_pagina)
+        pagina_atual = st.sidebar.number_input("Página", min_value=1, max_value=total_paginas, value=1, step=1)
+        inicio = (pagina_atual - 1) * itens_por_pagina
+        fim = inicio + itens_por_pagina
+        itens_exibidos = df_filtered.iloc[inicio:fim]
+        st.caption(f"Exibindo produtos {inicio + 1} a {min(fim, total_itens)} de {total_itens} (Página {pagina_atual} de {total_paginas})")
 
     IMAGEM_PADRAO = "https://via.placeholder.com/150x150.png?text=Sem+Foto"
 
     cols = st.columns(4)
-    for index, (idx, row) in enumerate(df_filtered.iterrows()):
+    for index, (idx, row) in enumerate(itens_exibidos.iterrows()):
         with cols[index % 4]:
             
             url_imagem = row['image']
@@ -153,7 +185,7 @@ else:
                     if imagem_compactada:
                         st.image(imagem_compactada, use_container_width=True)
                     else:
-                        st.image(IMAGEM_PADRAO, use_container_width=True)
+                        st.image(url_imagem, use_container_width=True)
                 except Exception:
                     st.image(IMAGEM_PADRAO, use_container_width=True)
             

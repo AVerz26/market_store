@@ -1,4 +1,5 @@
-requests
-pandas
 streamlit
-cloudscraper
+pandas
+requests
+curl_cffi
+Pillow
