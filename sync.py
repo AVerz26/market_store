@@ -43,68 +43,84 @@ def create_session():
         pass
     return s
 
-def fetch_page(session, offset, page_size=20):
-    url = f"https://sense.osuper.com.br/273/1353/v2/search?brands=&categories=&tags=&from={offset}&size={page_size}&sortField=_score&sortOrder=desc"
+def fetch_page(session, category, offset, page_size=20):
+    cat_param = f"categories={category}&" if category else "categories=&"
+    url = f"https://sense.osuper.com.br/273/1353/v2/search?brands=&{cat_param}tags=&from={offset}&size={page_size}&sortField=_score&sortOrder=desc"
     for attempt in range(3):
         try:
             resp = session.get(url, timeout=20)
             if resp.status_code == 200:
                 data = resp.json()
-                return offset, data.get('hits', [])
+                return data.get('hits', [])
             elif resp.status_code == 429:
                 time.sleep(1 + attempt)
         except Exception:
             time.sleep(1)
-    return offset, []
+    return []
 
-def sync_catalog(target_count=10000, max_workers=8):
-    print(f"=== Iniciando sincronizacao acelerada de {target_count} produtos ===")
+def sync_catalog(max_workers=10):
+    print("=== Coletando o catalogo MAXIMO ABSOLUTO da loja Machadao ===")
     t0 = time.time()
-    
-    page_size = 20
-    total_pages = (target_count + page_size - 1) // page_size
-    offsets = [i * page_size for i in range(total_pages)]
-    
-    print(f"Total de paginas a consultar: {total_pages} (lotes de {page_size}) com {max_workers} threads...")
+    main_session = create_session()
 
-    page_results = {}
-    completed = 0
-    thread_sessions = {}
+    # 1. Pega todas as categorias
+    base_url = "https://sense.osuper.com.br/273/1353/v2/search?brands=&categories=&tags=&from=0&size=1&sortField=_score&sortOrder=desc"
+    r = main_session.get(base_url, timeout=15)
+    cats_meta = r.json().get('extraData', {}).get('categories', [])
+    main_cats = [c['key'] for c in cats_meta if '>' not in c['key']]
     
-    def worker_task(offset):
+    tasks = []
+    page_size = 20
+
+    print(f"Descobrindo totais das {len(main_cats)} categorias principais...")
+    for cat in main_cats:
+        cat_url = f"https://sense.osuper.com.br/273/1353/v2/search?brands=&categories={cat}&tags=&from=0&size=1&sortField=_score&sortOrder=desc"
+        res = main_session.get(cat_url, timeout=15)
+        tot = res.json().get('total', 0) if res.status_code == 200 else 0
+        pages = (tot + page_size - 1) // page_size
+        for p in range(pages):
+            tasks.append((cat, p * page_size))
+
+    # Coletamos tambem do endpoint geral ate 10.000 para garantir cobertura completa
+    for p in range(500):
+        tasks.append(("", p * page_size))
+
+    tasks = list(set(tasks))
+    print(f"Total de requisicoes planejadas: {len(tasks)} com {max_workers} threads...")
+
+    thread_sessions = {}
+    def worker(task):
         import threading
         tid = threading.get_ident()
         if tid not in thread_sessions:
             thread_sessions[tid] = create_session()
         s = thread_sessions[tid]
-        return fetch_page(s, offset, page_size)
+        cat, off = task
+        return fetch_page(s, cat, off, page_size)
+
+    all_raw_hits = []
+    completed = 0
+    total_tasks = len(tasks)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(worker_task, off): off for off in offsets}
-        
-        for future in concurrent.futures.as_completed(futures):
-            offset, hits = future.result()
-            page_results[offset] = hits
+        futures = {executor.submit(worker, t): t for t in tasks}
+        for f in concurrent.futures.as_completed(futures):
+            hits = f.result()
+            if hits:
+                all_raw_hits.extend(hits)
             completed += 1
-            if completed % 50 == 0 or completed == total_pages:
-                items_so_far = sum(len(h) for h in page_results.values())
-                print(f"Progresso: {completed}/{total_pages} paginas concluidas (~{items_so_far} produtos coletados)...")
+            if completed % 100 == 0 or completed == total_tasks:
+                print(f"Progresso: {completed}/{total_tasks} requisicoes concluidas ({len(all_raw_hits)} produtos brutos)...")
 
-    all_hits = []
-    for off in sorted(page_results.keys()):
-        all_hits.extend(page_results[off])
-
-    print(f"Processando {len(all_hits)} itens brutos coletados...")
-
+    print("\nDesduplicando e organizando dados...")
     seen_ids = set()
-    cleaned_data = []
+    cleaned = []
 
-    for item in all_hits:
+    for item in all_raw_hits:
         item_id = item.get('id') or item.get('_id')
-        if item_id and item_id in seen_ids:
+        if not item_id or item_id in seen_ids:
             continue
-        if item_id:
-            seen_ids.add(item_id)
+        seen_ids.add(item_id)
 
         pricing = item.get('pricing', {})
         stocking = item.get('quantity', {})
@@ -125,7 +141,7 @@ def sync_catalog(target_count=10000, max_workers=8):
         if is_promo and promotional_price and price > 0:
             red_percent = (1 - (promotional_price / price)) * 100
         
-        cleaned_data.append({
+        cleaned.append({
             'name': name,
             'price': price,
             'promotionalPrice': promotional_price,
@@ -136,17 +152,20 @@ def sync_catalog(target_count=10000, max_workers=8):
             'category': cleaned_category
         })
 
-    df = pd.DataFrame(cleaned_data)
+    df = pd.DataFrame(cleaned)
+    df = df.sort_values(by=['is_promo', 'red_percent'], ascending=False).reset_index(drop=True)
+
     output_path = os.path.join(os.path.dirname(__file__), "produtos.parquet")
     df.to_parquet(output_path, compression="snappy")
 
     duration = time.time() - t0
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
 
-    print(f"\n[SUCESSO] Sincronizacao concluida em {duration:.1f} segundos!")
-    print(f"Total de produtos salvos: {len(df)}")
+    print(f"\n[SUCESSO COMPLETO]")
+    print(f"Total maximo de produtos unicos salvos: {len(df)}")
     print(f"Arquivo gerado: {output_path} ({size_mb:.2f} MB)")
+    print(f"Tempo total: {duration:.1f} segundos")
     print(f"Data/Hora: {datetime.datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
 
 if __name__ == "__main__":
-    sync_catalog(target_count=10000, max_workers=8)
+    sync_catalog(max_workers=10)
