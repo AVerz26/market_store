@@ -64,18 +64,9 @@ def fetch_url(url, timeout=30):
                 pass
         return requests.get(url, headers=HEADERS, timeout=timeout)
 
-def fetch_from_api():
-    """Busca produtos diretamente na API oficial"""
-    url = "https://sense.osuper.com.br/273/1353/search?brands=&categories=&tags=&size=10000&from=0&search=&sortField=_score&sortOrder=desc"
-    response = fetch_url(url, timeout=30)
-    
-    if response.status_code != 200:
-        raise RuntimeError(f"A API recusou a conexão (HTTP {response.status_code}). O firewall Cloudflare bloqueou o IP do servidor em nuvem.")
-        
-    dta = response.json()
-    hits = dta.get('hits', [])
-    data_for_df = []
-    
+def parse_items(hits):
+    """Normaliza lista de itens da API para lista de dicionários"""
+    data = []
     for item in hits:
         pricing = item.get('pricing', {})
         stocking = item.get('quantity', {})
@@ -96,7 +87,7 @@ def fetch_from_api():
         if is_promo and promotional_price and price > 0:
             red_percent = (1 - (promotional_price / price)) * 100
         
-        data_for_df.append({
+        data.append({
             'name': name,
             'price': price,
             'promotionalPrice': promotional_price,
@@ -106,24 +97,49 @@ def fetch_from_api():
             'store': store,
             'category': cleaned_category
         })
+    return data
+
+def fetch_from_api_v2(max_items=200):
+    """Busca produtos na nova API v2 (https://sense.osuper.com.br/273/1353/v2/search)"""
+    page_size = 20  # Limite máximo aceito pelo endpoint v2
+    all_data = []
+    
+    for offset in range(0, max_items, page_size):
+        url = f"https://sense.osuper.com.br/273/1353/v2/search?brands=&categories=&tags=&from={offset}&size={page_size}&sortField=_score&sortOrder=desc"
+        response = fetch_url(url, timeout=20)
         
-    return pd.DataFrame(data_for_df)
+        if response.status_code != 200:
+            if not all_data:
+                raise RuntimeError(f"A API recusou a conexão (HTTP {response.status_code}).")
+            break
+            
+        dta = response.json()
+        hits = dta.get('hits', [])
+        if not hits:
+            break
+            
+        all_data.extend(parse_items(hits))
+        
+        if not dta.get('hasNext', False):
+            break
+            
+    return pd.DataFrame(all_data)
 
 @st.cache_data(ttl=3600, show_spinner="Carregando produtos...")
 def load_data():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     parquet_path = os.path.join(base_dir, "produtos.parquet")
     
-    # 1. Se existir o arquivo produtos.parquet, carrega instantaneamente
+    # 1. Se existir o arquivo produtos.parquet sincronizado, carrega instantaneamente
     if os.path.exists(parquet_path):
         try:
-            return pd.read_parquet(parquet_path), "produtos.parquet"
+            return pd.read_parquet(parquet_path), "produtos.parquet (offline/cache)"
         except Exception:
             pass
 
-    # 2. Se não houver arquivo salvo, tenta a API
-    df = fetch_from_api()
-    return df, "API ao vivo"
+    # 2. Se não houver arquivo salvo, busca diretamente na API v2
+    df = fetch_from_api_v2()
+    return df, "API v2 ao vivo"
 
 @st.cache_data(ttl=3600)
 def compress_image_url(url):
